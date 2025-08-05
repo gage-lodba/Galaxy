@@ -1,33 +1,12 @@
 use std::sync::Arc;
 
-use rand::Rng;
-use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
+use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
-use vulkano::command_buffer::{
-    AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
-    SubpassBeginInfo, SubpassContents,
-};
-use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
-use vulkano::device::{
-    Device, DeviceCreateInfo, DeviceExtensions, Features, Queue, QueueCreateInfo, QueueFlags,
-};
-use vulkano::image::view::ImageView;
-use vulkano::image::{Image, ImageUsage};
+use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, Features, QueueCreateInfo};
+use vulkano::image::ImageUsage;
 use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
-use vulkano::pipeline::graphics::GraphicsPipelineCreateInfo;
-use vulkano::pipeline::graphics::color_blend::{ColorBlendAttachmentState, ColorBlendState};
-use vulkano::pipeline::graphics::input_assembly::InputAssemblyState;
-use vulkano::pipeline::graphics::multisample::MultisampleState;
-use vulkano::pipeline::graphics::rasterization::RasterizationState;
-use vulkano::pipeline::graphics::vertex_input::{Vertex, VertexDefinition};
-use vulkano::pipeline::graphics::viewport::{Viewport, ViewportState};
-use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
-use vulkano::pipeline::{
-    GraphicsPipeline, Pipeline, PipelineLayout, PipelineShaderStageCreateInfo,
-};
-use vulkano::render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass};
-use vulkano::shader::ShaderModule;
+use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::swapchain::{self, Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo};
 use vulkano::sync::future::FenceSignalFuture;
 use vulkano::sync::{self, GpuFuture};
@@ -36,355 +15,10 @@ use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
-#[derive(BufferContents, Vertex)]
-#[repr(C)]
-struct MyVertex {
-    #[format(R32G32_SFLOAT)]
-    position: [f32; 2],
-    #[format(R32G32B32A32_SFLOAT)]
-    color: [f32; 4],
-}
-
-#[derive(BufferContents)]
-#[repr(C)]
-struct PushConstants {
-    time: f32,
-}
-
-mod vs {
-    vulkano_shaders::shader! {
-        ty: "vertex",
-        src: r"
-            #version 460
-
-            layout(location = 0) in vec2 position;
-            layout(location = 1) in vec4 color;
-            
-            layout(push_constant) uniform PushConstants {
-                float time;
-            } push;
-            
-            layout(location = 0) out vec4 v_color;
-
-            // Better hash function for more random distribution
-            float hash(vec2 p) {
-                vec3 p3 = fract(vec3(p.xyx) * vec3(443.897, 441.423, 437.195));
-                p3 += dot(p3, p3.yzx + 19.19);
-                return fract((p3.x + p3.y) * p3.z);
-            }
-
-            void main() {
-                gl_Position = vec4(position, 0.0, 1.0);
-                
-                // Generate multiple frequencies of twinkle
-                float h = hash(position);  // Unique per star
-                float twinkle = 1.0;
-                
-                // Layer multiple sine waves for more natural twinkling
-                twinkle *= sin(push.time * (1.0 + h) * 2.0) * 0.5 + 0.5;
-                twinkle *= sin(push.time * (2.0 + h) * 3.0) * 0.25 + 0.75;
-                twinkle *= sin(push.time * (3.0 + h) * 5.0) * 0.15 + 0.85;
-                
-                // Increase base point size to allow for glow
-                float brightness = (color.r + color.g + color.b) / 3.0;
-                gl_PointSize = (2.0 + brightness * 3.0) * twinkle;
-                
-                v_color = vec4(color.rgb * twinkle, color.a);
-            }
-        "
-    }
-}
-
-mod fs {
-    vulkano_shaders::shader! {
-        ty: "fragment",
-        src: r"
-            #version 460
-
-            layout(location = 0) in vec4 v_color;
-            layout(location = 0) out vec4 f_color;
-
-            void main() {
-                // Calculate distance from center of point
-                vec2 centerDist = 2.0 * gl_PointCoord - 1.0;
-                float dist = dot(centerDist, centerDist);
-                
-                // Discard pixels far outside the glow radius
-                if (dist > 2.0) {
-                    discard;
-                }
-                
-                // Create multiple layers of glow
-                float innerGlow = exp(-dist * 8.0);        // Bright core
-                float midGlow = exp(-dist * 4.0) * 0.7;    // Medium glow
-                float outerGlow = exp(-dist * 2.0) * 0.3;  // Soft outer glow
-                
-                // Combine the glow layers
-                float glow = innerGlow + midGlow + outerGlow;
-                
-                // Create color variation for the glow
-                vec3 glowColor = mix(v_color.rgb, v_color.rgb * 1.5, innerGlow);
-                
-                // Add slight color shift towards blue in the outer glow
-                vec3 outerColor = mix(glowColor, vec3(0.6, 0.8, 1.0), outerGlow * 0.3);
-                
-                // Final color combining all effects
-                f_color = vec4(outerColor * glow, v_color.a * glow);
-            }
-        "
-    }
-}
-
-fn generate_galaxy_vertices(num_stars: usize) -> Vec<MyVertex> {
-    let mut rng = rand::rng();
-    let mut vertices = Vec::with_capacity(num_stars);
-
-    for _ in 0..num_stars {
-        let angle = rng.random_range(0.0..std::f32::consts::PI * 2.0);
-        let distance = rng.random_range(0.0..1.0);
-        let spiral_angle = angle + distance * 4.0;
-
-        let x = spiral_angle.cos() * distance;
-        let y = spiral_angle.sin() * distance;
-
-        // Star type distribution based on real stellar populations
-        let star_type = match rng.random_range(0..100) {
-            0..=1 => 0,   // 2% Blue giants (very rare, very bright)
-            2..=15 => 1,  // 14% Blue-white stars
-            16..=35 => 2, // 20% White stars
-            36..=75 => 3, // 40% Yellow stars (like our Sun)
-            _ => 4,       // 24% Orange-Red stars
-        };
-
-        // Colors based on stellar classification (OBAFGKM)
-        let (r, g, b) = match star_type {
-            0 => (
-                // Blue giants (O type)
-                rng.random_range(0.7..0.8), // Some red
-                rng.random_range(0.8..0.9), // More green
-                1.0,                        // Maximum blue
-            ),
-            1 => (
-                // Blue-white stars (B type)
-                rng.random_range(0.8..0.9), // More red
-                rng.random_range(0.8..0.9), // More green
-                rng.random_range(0.9..1.0), // Lots of blue
-            ),
-            2 => (
-                // White stars (A type)
-                rng.random_range(0.9..1.0), // Full red
-                rng.random_range(0.9..1.0), // Full green
-                rng.random_range(0.9..1.0), // Full blue
-            ),
-            3 => (
-                // Yellow stars (G type, like our Sun)
-                rng.random_range(0.9..1.0), // Full red
-                rng.random_range(0.8..0.9), // Slightly less green
-                rng.random_range(0.5..0.6), // Much less blue
-            ),
-            _ => (
-                // Orange-Red stars (K-M type)
-                rng.random_range(0.9..1.0), // Full red
-                rng.random_range(0.5..0.7), // Much less green
-                rng.random_range(0.1..0.3), // Very little blue
-            ),
-        };
-
-        // Brightness based on distance from center and random variation
-        let brightness = (1.0 - distance * 0.5) * rng.random_range(0.5..1.0);
-
-        // Apply brightness and add slight color variation
-        let color = [
-            r * brightness * rng.random_range(0.95..1.0),
-            g * brightness * rng.random_range(0.95..1.0),
-            b * brightness * rng.random_range(0.95..1.0),
-            0.9 + rng.random_range(-0.1..0.1), // Slight alpha variation
-        ];
-
-        vertices.push(MyVertex {
-            position: [x, y],
-            color,
-        });
-    }
-
-    vertices
-}
-
-pub fn select_physical_device(
-    instance: &Arc<Instance>,
-    surface: &Arc<Surface>,
-    device_extensions: &DeviceExtensions,
-) -> (Arc<PhysicalDevice>, u32) {
-    instance
-        .enumerate_physical_devices()
-        .expect("failed to enumerate physical devices")
-        .filter(|p| p.supported_extensions().contains(device_extensions))
-        .filter_map(|p| {
-            p.queue_family_properties()
-                .iter()
-                .enumerate()
-                .position(|(i, q)| {
-                    q.queue_flags.contains(QueueFlags::GRAPHICS)
-                        && p.surface_support(i as u32, surface).unwrap_or(false)
-                })
-                .map(|q| (p, q as u32))
-        })
-        .min_by_key(|(p, _)| match p.properties().device_type {
-            PhysicalDeviceType::DiscreteGpu => 0,
-            PhysicalDeviceType::IntegratedGpu => 1,
-            PhysicalDeviceType::VirtualGpu => 2,
-            PhysicalDeviceType::Cpu => 3,
-            _ => 4,
-        })
-        .expect("no device available")
-}
-
-fn get_render_pass(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Arc<RenderPass> {
-    vulkano::single_pass_renderpass!(
-        device,
-        attachments: {
-            color: {
-                format: swapchain.image_format(), // set the format the same as the swapchain
-                samples: 1,
-                load_op: Clear,
-                store_op: Store,
-            },
-        },
-        pass: {
-            color: [color],
-            depth_stencil: {},
-        },
-    )
-    .unwrap()
-}
-
-fn get_framebuffers(images: &[Arc<Image>], render_pass: Arc<RenderPass>) -> Vec<Arc<Framebuffer>> {
-    images
-        .iter()
-        .map(|image| {
-            let view = ImageView::new_default(image.clone()).unwrap();
-            Framebuffer::new(
-                render_pass.clone(),
-                FramebufferCreateInfo {
-                    attachments: vec![view],
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-        })
-        .collect::<Vec<_>>()
-}
-
-fn get_pipeline(
-    device: Arc<Device>,
-    vs: Arc<ShaderModule>,
-    fs: Arc<ShaderModule>,
-    render_pass: Arc<RenderPass>,
-    viewport: Viewport,
-) -> Arc<GraphicsPipeline> {
-    let vs = vs.entry_point("main").unwrap();
-    let fs = fs.entry_point("main").unwrap();
-
-    let vertex_input_state = MyVertex::per_vertex()
-        .definition(&vs.info().input_interface)
-        .unwrap();
-
-    let stages = [
-        PipelineShaderStageCreateInfo::new(vs),
-        PipelineShaderStageCreateInfo::new(fs),
-    ];
-
-    let layout = PipelineLayout::new(
-        device.clone(),
-        PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
-            .into_pipeline_layout_create_info(device.clone())
-            .unwrap(),
-    )
-    .unwrap();
-
-    let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
-
-    GraphicsPipeline::new(
-        device.clone(),
-        None,
-        GraphicsPipelineCreateInfo {
-            stages: stages.into_iter().collect(),
-            vertex_input_state: Some(vertex_input_state),
-            input_assembly_state: Some(InputAssemblyState {
-                topology: vulkano::pipeline::graphics::input_assembly::PrimitiveTopology::PointList, // Fix: Set topology to PointList
-                ..Default::default()
-            }),
-            viewport_state: Some(ViewportState {
-                viewports: [viewport].into_iter().collect(),
-                ..Default::default()
-            }),
-            rasterization_state: Some(RasterizationState {
-                cull_mode: vulkano::pipeline::graphics::rasterization::CullMode::None,
-                polygon_mode: vulkano::pipeline::graphics::rasterization::PolygonMode::Fill,
-                line_width: 1.0,
-                //point_size: Some(1.0), // Fix: Enable point size
-                ..Default::default()
-            }),
-            multisample_state: Some(MultisampleState {
-                rasterization_samples: vulkano::image::SampleCount::Sample1,
-                ..Default::default()
-            }),
-            color_blend_state: Some(ColorBlendState::with_attachment_states(
-                subpass.num_color_attachments(),
-                ColorBlendAttachmentState::default(),
-            )),
-            subpass: Some(subpass.into()),
-            ..GraphicsPipelineCreateInfo::layout(layout)
-        },
-    )
-    .unwrap()
-}
-
-fn get_command_buffers(
-    command_buffer_allocator: &StandardCommandBufferAllocator,
-    queue: &Arc<Queue>,
-    pipeline: &Arc<GraphicsPipeline>,
-    framebuffers: &[Arc<Framebuffer>],
-    vertex_buffer: &Subbuffer<[MyVertex]>,
-    time: f32,
-) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
-    framebuffers
-        .iter()
-        .map(|framebuffer| {
-            let mut builder = AutoCommandBufferBuilder::primary(
-                command_buffer_allocator,
-                queue.queue_family_index(),
-                CommandBufferUsage::MultipleSubmit,
-            )
-            .unwrap();
-
-            builder
-                .begin_render_pass(
-                    RenderPassBeginInfo {
-                        clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
-                        ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-                    },
-                    SubpassBeginInfo {
-                        contents: SubpassContents::Inline,
-                        ..Default::default()
-                    },
-                )
-                .unwrap()
-                .bind_pipeline_graphics(pipeline.clone())
-                .unwrap()
-                .push_constants(pipeline.layout().clone(), 0, PushConstants { time })
-                .unwrap()
-                .bind_vertex_buffers(0, vertex_buffer.clone())
-                .unwrap()
-                .draw(vertex_buffer.len() as u32, 1, 0, 0)
-                .unwrap()
-                .end_render_pass(Default::default())
-                .unwrap();
-
-            builder.build().unwrap()
-        })
-        .collect()
-}
+mod galaxy;
+mod shaders;
+mod vertex;
+mod vulkan;
 
 fn main() {
     let library = vulkano::VulkanLibrary::new().expect("no local Vulkan library/DLL");
@@ -416,7 +50,7 @@ fn main() {
     };
 
     let (physical_device, queue_family_index) =
-        select_physical_device(&instance, &surface, &device_extensions);
+        vulkan::device::select_physical_device(&instance, &surface, &device_extensions);
 
     let (device, mut queues) = Device::new(
         physical_device.clone(),
@@ -461,12 +95,12 @@ fn main() {
         .unwrap()
     };
 
-    let render_pass = get_render_pass(device.clone(), swapchain.clone());
-    let framebuffers = get_framebuffers(&images, render_pass.clone());
+    let render_pass = vulkan::render_pass::get_render_pass(device.clone(), swapchain.clone());
+    let framebuffers = vulkan::framebuffer::get_framebuffers(&images, render_pass.clone());
 
     let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
-    let vertices = generate_galaxy_vertices(50000); // 50000 stars
+    let vertices = galaxy::generate_galaxy_vertices(50000); // 50000 stars
     let vertex_buffer = Buffer::from_iter(
         memory_allocator,
         BufferCreateInfo {
@@ -482,8 +116,8 @@ fn main() {
     )
     .unwrap();
 
-    let vs = vs::load(device.clone()).expect("failed to create shader module");
-    let fs = fs::load(device.clone()).expect("failed to create shader module");
+    let vs = shaders::vs::load(device.clone()).expect("failed to create shader module");
+    let fs = shaders::fs::load(device.clone()).expect("failed to create shader module");
 
     let mut viewport = Viewport {
         offset: [0.0, 0.0],
@@ -491,7 +125,7 @@ fn main() {
         depth_range: 0.0..=1.0,
     };
 
-    let pipeline = get_pipeline(
+    let pipeline = vulkan::pipeline::get_pipeline(
         device.clone(),
         vs.clone(),
         fs.clone(),
@@ -502,7 +136,7 @@ fn main() {
     let command_buffer_allocator =
         StandardCommandBufferAllocator::new(device.clone(), Default::default());
 
-    let mut command_buffers = get_command_buffers(
+    let mut command_buffers = vulkan::command_buffer::get_command_buffers(
         &command_buffer_allocator,
         &queue,
         &pipeline,
@@ -549,20 +183,21 @@ fn main() {
                     .expect("failed to recreate swapchain");
 
                 swapchain = new_swapchain;
-                let new_framebuffers = get_framebuffers(&new_images, render_pass.clone());
+                let new_framebuffers =
+                    vulkan::framebuffer::get_framebuffers(&new_images, render_pass.clone());
 
                 if window_resized {
                     window_resized = false;
 
                     viewport.extent = new_dimensions.into();
-                    let new_pipeline = get_pipeline(
+                    let new_pipeline = vulkan::pipeline::get_pipeline(
                         device.clone(),
                         vs.clone(),
                         fs.clone(),
                         render_pass.clone(),
                         viewport.clone(),
                     );
-                    command_buffers = get_command_buffers(
+                    command_buffers = vulkan::command_buffer::get_command_buffers(
                         &command_buffer_allocator,
                         &queue,
                         &new_pipeline,
