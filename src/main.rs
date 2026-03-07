@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
@@ -10,8 +10,8 @@ use vulkano::device::{
 use vulkano::image::ImageUsage;
 use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
-use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::pipeline::GraphicsPipeline;
+use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::render_pass::{Framebuffer, RenderPass};
 use vulkano::shader::ShaderModule;
 use vulkano::swapchain::{self, Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo};
@@ -66,8 +66,7 @@ struct RenderContext {
 
 impl App {
     fn new(event_loop: &EventLoop<()>) -> Self {
-        let library =
-            vulkano::VulkanLibrary::new().expect("no local Vulkan library/DLL");
+        let library = vulkano::VulkanLibrary::new().expect("no local Vulkan library/DLL");
 
         let required_extensions = Surface::required_extensions(event_loop).unwrap();
         let instance = Instance::new(
@@ -109,8 +108,7 @@ impl App {
 
         let queue = queues.next().unwrap();
 
-        let memory_allocator =
-            Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
 
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
             device.clone(),
@@ -156,8 +154,7 @@ impl ApplicationHandler for App {
                 .create_window(Window::default_attributes().with_title("Galaxy"))
                 .unwrap(),
         );
-        let surface =
-            Surface::from_window(self.instance.clone(), window.clone()).unwrap();
+        let surface = Surface::from_window(self.instance.clone(), window.clone()).unwrap();
         let window_size = window.inner_size();
 
         let (swapchain, images) = {
@@ -182,11 +179,7 @@ impl ApplicationHandler for App {
                     image_format,
                     image_extent: window_size.into(),
                     image_usage: ImageUsage::COLOR_ATTACHMENT,
-                    composite_alpha: caps
-                        .supported_composite_alpha
-                        .into_iter()
-                        .next()
-                        .unwrap(),
+                    composite_alpha: caps.supported_composite_alpha.into_iter().next().unwrap(),
                     ..Default::default()
                 },
             )
@@ -195,8 +188,7 @@ impl ApplicationHandler for App {
 
         let render_pass =
             vulkan::render_pass::get_render_pass(self.device.clone(), swapchain.clone());
-        let framebuffers =
-            vulkan::framebuffer::get_framebuffers(&images, render_pass.clone());
+        let framebuffers = vulkan::framebuffer::get_framebuffers(&images, render_pass.clone());
 
         let pipeline = vulkan::pipeline::get_pipeline(
             self.device.clone(),
@@ -277,10 +269,8 @@ impl ApplicationHandler for App {
                         .expect("failed to recreate swapchain");
 
                     rcx.swapchain = new_swapchain;
-                    rcx.framebuffers = vulkan::framebuffer::get_framebuffers(
-                        &new_images,
-                        rcx.render_pass.clone(),
-                    );
+                    rcx.framebuffers =
+                        vulkan::framebuffer::get_framebuffers(&new_images, rcx.render_pass.clone());
                     rcx.viewport.extent = window_size.into();
                     rcx.recreate_swapchain = false;
                 }
@@ -322,10 +312,7 @@ impl ApplicationHandler for App {
                     .unwrap()
                     .then_swapchain_present(
                         self.queue.clone(),
-                        SwapchainPresentInfo::swapchain_image_index(
-                            rcx.swapchain.clone(),
-                            image_i,
-                        ),
+                        SwapchainPresentInfo::swapchain_image_index(rcx.swapchain.clone(), image_i),
                     )
                     .then_signal_fence_and_flush();
 
@@ -335,13 +322,11 @@ impl ApplicationHandler for App {
                     }
                     Err(VulkanError::OutOfDate) => {
                         rcx.recreate_swapchain = true;
-                        rcx.previous_frame_end =
-                            Some(sync::now(self.device.clone()).boxed());
+                        rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
                     }
                     Err(e) => {
                         println!("failed to flush future: {e}");
-                        rcx.previous_frame_end =
-                            Some(sync::now(self.device.clone()).boxed());
+                        rcx.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
                     }
                 }
             }

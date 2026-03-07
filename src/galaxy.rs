@@ -94,11 +94,7 @@ fn generate_star(rng: &mut impl Rng, x: f32, y: f32, distance: f32) -> StarVerte
     };
 
     let (r, g, b) = match star_type {
-        0 => (
-            rng.random_range(0.7..0.8),
-            rng.random_range(0.8..0.9),
-            1.0,
-        ),
+        0 => (rng.random_range(0.7..0.8), rng.random_range(0.8..0.9), 1.0),
         1 => (
             rng.random_range(0.8..0.9),
             rng.random_range(0.8..0.9),
