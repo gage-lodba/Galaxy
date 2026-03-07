@@ -3,15 +3,15 @@ use std::sync::Arc;
 use vulkano::{
     device::Device,
     pipeline::{
-        GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
+        DynamicState, GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
-            color_blend::{ColorBlendAttachmentState, ColorBlendState},
-            input_assembly::InputAssemblyState,
+            color_blend::{AttachmentBlend, ColorBlendAttachmentState, ColorBlendState},
+            input_assembly::{InputAssemblyState, PrimitiveTopology},
             multisample::MultisampleState,
-            rasterization::RasterizationState,
+            rasterization::{CullMode, PolygonMode, RasterizationState},
             vertex_input::{Vertex, VertexDefinition},
-            viewport::{Viewport, ViewportState},
+            viewport::ViewportState,
         },
         layout::PipelineDescriptorSetLayoutCreateInfo,
     },
@@ -19,21 +19,18 @@ use vulkano::{
     shader::ShaderModule,
 };
 
-use crate::vertex;
+use crate::vertex::StarVertex;
 
 pub fn get_pipeline(
     device: Arc<Device>,
     vs: Arc<ShaderModule>,
     fs: Arc<ShaderModule>,
     render_pass: Arc<RenderPass>,
-    viewport: Viewport,
 ) -> Arc<GraphicsPipeline> {
     let vs = vs.entry_point("main").unwrap();
     let fs = fs.entry_point("main").unwrap();
 
-    let vertex_input_state = vertex::MyVertex::per_vertex()
-        .definition(&vs.info().input_interface)
-        .unwrap();
+    let vertex_input_state = StarVertex::per_vertex().definition(&vs).unwrap();
 
     let stages = [
         PipelineShaderStageCreateInfo::new(vs),
@@ -57,28 +54,25 @@ pub fn get_pipeline(
             stages: stages.into_iter().collect(),
             vertex_input_state: Some(vertex_input_state),
             input_assembly_state: Some(InputAssemblyState {
-                topology: vulkano::pipeline::graphics::input_assembly::PrimitiveTopology::PointList, // Fix: Set topology to PointList
+                topology: PrimitiveTopology::PointList,
                 ..Default::default()
             }),
-            viewport_state: Some(ViewportState {
-                viewports: [viewport].into_iter().collect(),
-                ..Default::default()
-            }),
+            viewport_state: Some(ViewportState::default()),
             rasterization_state: Some(RasterizationState {
-                cull_mode: vulkano::pipeline::graphics::rasterization::CullMode::None,
-                polygon_mode: vulkano::pipeline::graphics::rasterization::PolygonMode::Fill,
+                cull_mode: CullMode::None,
+                polygon_mode: PolygonMode::Fill,
                 line_width: 1.0,
-                //point_size: Some(1.0), // Fix: Enable point size
                 ..Default::default()
             }),
-            multisample_state: Some(MultisampleState {
-                rasterization_samples: vulkano::image::SampleCount::Sample1,
-                ..Default::default()
-            }),
+            multisample_state: Some(MultisampleState::default()),
             color_blend_state: Some(ColorBlendState::with_attachment_states(
                 subpass.num_color_attachments(),
-                ColorBlendAttachmentState::default(),
+                ColorBlendAttachmentState {
+                    blend: Some(AttachmentBlend::alpha()),
+                    ..Default::default()
+                },
             )),
+            dynamic_state: [DynamicState::Viewport].into_iter().collect(),
             subpass: Some(subpass.into()),
             ..GraphicsPipelineCreateInfo::layout(layout)
         },

@@ -7,7 +7,7 @@ pub fn get_render_pass(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Arc<Re
         device,
         attachments: {
             color: {
-                format: swapchain.image_format(), // set the format the same as the swapchain
+                format: swapchain.image_format(),
                 samples: 1,
                 load_op: Clear,
                 store_op: Store,

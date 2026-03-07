@@ -8,11 +8,11 @@ use vulkano::{
         allocator::StandardCommandBufferAllocator,
     },
     device::Queue,
-    pipeline::{GraphicsPipeline, Pipeline},
+    pipeline::{GraphicsPipeline, Pipeline, graphics::viewport::Viewport},
     render_pass::Framebuffer,
 };
 
-use crate::vertex;
+use crate::vertex::StarVertex;
 
 #[derive(BufferContents)]
 #[repr(C)]
@@ -20,48 +20,46 @@ struct PushConstants {
     time: f32,
 }
 
-pub fn get_command_buffers(
-    command_buffer_allocator: &StandardCommandBufferAllocator,
+pub fn get_command_buffer(
+    command_buffer_allocator: &Arc<StandardCommandBufferAllocator>,
     queue: &Arc<Queue>,
     pipeline: &Arc<GraphicsPipeline>,
-    framebuffers: &[Arc<Framebuffer>],
-    vertex_buffer: &Subbuffer<[vertex::MyVertex]>,
+    framebuffer: &Arc<Framebuffer>,
+    vertex_buffer: &Subbuffer<[StarVertex]>,
+    viewport: &Viewport,
     time: f32,
-) -> Vec<Arc<PrimaryAutoCommandBuffer>> {
-    framebuffers
-        .iter()
-        .map(|framebuffer| {
-            let mut builder = AutoCommandBufferBuilder::primary(
-                command_buffer_allocator,
-                queue.queue_family_index(),
-                CommandBufferUsage::MultipleSubmit,
-            )
-            .unwrap();
+) -> Arc<PrimaryAutoCommandBuffer> {
+    let mut builder = AutoCommandBufferBuilder::primary(
+        command_buffer_allocator.clone(),
+        queue.queue_family_index(),
+        CommandBufferUsage::OneTimeSubmit,
+    )
+    .unwrap();
 
-            builder
-                .begin_render_pass(
-                    RenderPassBeginInfo {
-                        clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
-                        ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
-                    },
-                    SubpassBeginInfo {
-                        contents: SubpassContents::Inline,
-                        ..Default::default()
-                    },
-                )
-                .unwrap()
-                .bind_pipeline_graphics(pipeline.clone())
-                .unwrap()
-                .push_constants(pipeline.layout().clone(), 0, PushConstants { time })
-                .unwrap()
-                .bind_vertex_buffers(0, vertex_buffer.clone())
-                .unwrap()
-                .draw(vertex_buffer.len() as u32, 1, 0, 0)
-                .unwrap()
-                .end_render_pass(Default::default())
-                .unwrap();
+    builder
+        .begin_render_pass(
+            RenderPassBeginInfo {
+                clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
+                ..RenderPassBeginInfo::framebuffer(framebuffer.clone())
+            },
+            SubpassBeginInfo {
+                contents: SubpassContents::Inline,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .set_viewport(0, [viewport.clone()].into_iter().collect())
+        .unwrap()
+        .bind_pipeline_graphics(pipeline.clone())
+        .unwrap()
+        .push_constants(pipeline.layout().clone(), 0, PushConstants { time })
+        .unwrap()
+        .bind_vertex_buffers(0, vertex_buffer.clone())
+        .unwrap();
 
-            builder.build().unwrap()
-        })
-        .collect()
+    unsafe { builder.draw(vertex_buffer.len() as u32, 1, 0, 0) }.unwrap();
+
+    builder.end_render_pass(Default::default()).unwrap();
+
+    builder.build().unwrap()
 }

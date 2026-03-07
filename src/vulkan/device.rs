@@ -6,12 +6,12 @@ use vulkano::{
         physical::{PhysicalDevice, PhysicalDeviceType},
     },
     instance::Instance,
-    swapchain::Surface,
 };
+use winit::event_loop::EventLoop;
 
 pub fn select_physical_device(
     instance: &Arc<Instance>,
-    surface: &Arc<Surface>,
+    event_loop: &EventLoop<()>,
     device_extensions: &DeviceExtensions,
 ) -> (Arc<PhysicalDevice>, u32) {
     instance
@@ -23,8 +23,8 @@ pub fn select_physical_device(
                 .iter()
                 .enumerate()
                 .position(|(i, q)| {
-                    q.queue_flags.contains(QueueFlags::GRAPHICS)
-                        && p.surface_support(i as u32, surface).unwrap_or(false)
+                    q.queue_flags.intersects(QueueFlags::GRAPHICS)
+                        && p.presentation_support(i as u32, event_loop).unwrap_or(false)
                 })
                 .map(|q| (p, q as u32))
         })
