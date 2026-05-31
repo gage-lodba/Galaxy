@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
-use vulkano::device::{
-    Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
-};
+use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo};
+use vulkano::format::Format;
 use vulkano::image::ImageUsage;
 use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
 use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
@@ -20,8 +20,12 @@ use vulkano::{Validated, VulkanError};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+#[cfg(target_os = "linux")]
+use winit::platform::wayland::EventLoopBuilderExtWayland;
 #[cfg(target_os = "windows")]
 use winit::platform::windows::EventLoopBuilderExtWindows;
+#[cfg(target_os = "linux")]
+use winit::platform::x11::EventLoopBuilderExtX11;
 use winit::window::{Window, WindowId};
 
 mod galaxy;
@@ -30,6 +34,23 @@ mod vertex;
 mod vulkan;
 
 use vertex::StarVertex;
+
+/// Number of static background stars in the scene.
+const STAR_COUNT: usize = 50_000;
+/// Number of periodic shooting stars (each drawn as a head plus a fading trail).
+const SHOOTING_STAR_COUNT: usize = 24;
+/// Number of distant rotating galaxies.
+const GALAXY_COUNT: usize = 4;
+/// Number of soft, drifting nebula clouds.
+const NEBULA_COUNT: usize = 5;
+/// Number of slow comets with comae and tails.
+const COMET_COUNT: usize = 3;
+/// Number of supernovae that periodically flash and throw off a shockwave.
+const SUPERNOVA_COUNT: usize = 4;
+/// Number of rhythmically pulsing pulsars.
+const PULSAR_COUNT: usize = 6;
+/// Number of black holes (dark disks that occlude the sky, ringed by a glow).
+const BLACK_HOLE_COUNT: usize = 2;
 
 fn main() {
     std::thread::Builder::new()
@@ -62,6 +83,7 @@ struct RenderContext {
     previous_frame_end: Option<Box<dyn GpuFuture>>,
     start_time: Instant,
     redraw_active: Arc<AtomicBool>,
+    redraw_thread: Option<JoinHandle<()>>,
 }
 
 impl App {
@@ -84,11 +106,6 @@ impl App {
             ..DeviceExtensions::empty()
         };
 
-        let device_features = DeviceFeatures {
-            fill_mode_non_solid: true,
-            ..DeviceFeatures::empty()
-        };
-
         let (physical_device, queue_family_index) =
             vulkan::device::select_physical_device(&instance, event_loop, &device_extensions);
 
@@ -100,7 +117,6 @@ impl App {
                     ..Default::default()
                 }],
                 enabled_extensions: device_extensions,
-                enabled_features: device_features,
                 ..Default::default()
             },
         )
@@ -115,7 +131,16 @@ impl App {
             Default::default(),
         ));
 
-        let vertices = galaxy::generate_galaxy_vertices(50000, 30);
+        let vertices = galaxy::generate_scene_vertices(&galaxy::SceneConfig {
+            stars: STAR_COUNT,
+            shooting_stars: SHOOTING_STAR_COUNT,
+            galaxies: GALAXY_COUNT,
+            nebulae: NEBULA_COUNT,
+            comets: COMET_COUNT,
+            supernovae: SUPERNOVA_COUNT,
+            pulsars: PULSAR_COUNT,
+            black_holes: BLACK_HOLE_COUNT,
+        });
         let vertex_buffer = Buffer::from_iter(
             memory_allocator,
             BufferCreateInfo {
@@ -149,6 +174,15 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        // If we're resuming after a previous context existed, stop its redraw
+        // thread first so it doesn't keep spinning on the old, dropped window.
+        if let Some(old) = self.rcx.take() {
+            old.redraw_active.store(false, Ordering::Relaxed);
+            if let Some(handle) = old.redraw_thread {
+                let _ = handle.join();
+            }
+        }
+
         let window = Arc::new(
             event_loop
                 .create_window(Window::default_attributes().with_title("Galaxy"))
@@ -164,18 +198,32 @@ impl ApplicationHandler for App {
                 .surface_capabilities(&surface, Default::default())
                 .expect("failed to get surface capabilities");
 
-            let image_format = self
+            let surface_formats = self
                 .device
                 .physical_device()
                 .surface_formats(&surface, Default::default())
-                .unwrap()[0]
-                .0;
+                .unwrap();
+
+            // Prefer a standard linear BGRA/RGBA format so the procedural star
+            // colors are presented without an unexpected sRGB conversion; fall
+            // back to whatever the surface offers first.
+            let image_format = surface_formats
+                .iter()
+                .map(|(format, _)| *format)
+                .find(|format| matches!(format, Format::B8G8R8A8_UNORM | Format::R8G8B8A8_UNORM))
+                .unwrap_or(surface_formats[0].0);
+
+            // Double buffer at minimum, but never request more than the surface allows.
+            let mut min_image_count = caps.min_image_count.max(2);
+            if let Some(max) = caps.max_image_count {
+                min_image_count = min_image_count.min(max);
+            }
 
             Swapchain::new(
                 self.device.clone(),
                 surface,
                 SwapchainCreateInfo {
-                    min_image_count: caps.min_image_count.max(2),
+                    min_image_count,
                     image_format,
                     image_extent: window_size.into(),
                     image_usage: ImageUsage::COLOR_ATTACHMENT,
@@ -210,7 +258,7 @@ impl ApplicationHandler for App {
         let redraw_active = Arc::new(AtomicBool::new(true));
         let redraw_flag = redraw_active.clone();
         let redraw_window = window.clone();
-        std::thread::spawn(move || {
+        let redraw_thread = std::thread::spawn(move || {
             while redraw_flag.load(Ordering::Relaxed) {
                 redraw_window.request_redraw();
                 std::thread::sleep(std::time::Duration::from_millis(16));
@@ -228,6 +276,7 @@ impl ApplicationHandler for App {
             previous_frame_end,
             start_time: Instant::now(),
             redraw_active,
+            redraw_thread: Some(redraw_thread),
         });
     }
 
@@ -333,14 +382,21 @@ impl ApplicationHandler for App {
             _ => (),
         }
     }
-
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
 }
 
 fn run() {
     let mut builder = EventLoop::builder();
+    // The app runs on a spawned thread (for a larger stack), so the event loop
+    // is created off the main thread. winit requires explicit opt-in for this
+    // on each platform/backend.
     #[cfg(target_os = "windows")]
     builder.with_any_thread(true);
+    #[cfg(target_os = "linux")]
+    {
+        // Set both so it works under either backend; the relevant one is used.
+        EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
+        EventLoopBuilderExtX11::with_any_thread(&mut builder, true);
+    }
     let event_loop = builder.build().unwrap();
     let mut app = App::new(&event_loop);
     event_loop.run_app(&mut app).unwrap();

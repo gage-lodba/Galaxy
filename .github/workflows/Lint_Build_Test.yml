@@ -47,7 +47,13 @@ jobs:
 
   Upload:
     needs: build
+    # Only publish a release for pushes to main; pull requests (especially from
+    # forks) get a read-only token and must not create releases.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v6
@@ -58,8 +64,9 @@ jobs:
       - name: Release Build
         uses: softprops/action-gh-release@v2
         with:
-          name: Release
-          tag_name: ${{ github.run_id }}
+          name: Latest Build
+          tag_name: latest
+          make_latest: true
           body: |
             **This release has been built by Github Actions**
             [Link to build](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
